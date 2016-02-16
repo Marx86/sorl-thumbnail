@@ -23,6 +23,7 @@ def serialize_image_file(image_file):
         'name': image_file.name,
         'storage': image_file.serialize_storage(),
         'size': image_file.size,
+        'ext_url': image_file.ext_url,
     }
     return simplejson.dumps(data)
 
@@ -34,6 +35,7 @@ def deserialize_image_file(s):
             self._wrapped = get_module_class(data['storage'])()
     image_file = ImageFile(data['name'], LazyStorage())
     image_file.set_size(data['size'])
+    image_file.ext_url = data['ext_url']
     return image_file
 
 

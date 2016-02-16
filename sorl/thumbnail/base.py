@@ -4,6 +4,8 @@ from sorl.thumbnail.images import ImageFile
 from sorl.thumbnail import default
 from sorl.thumbnail.parsers import parse_geometry
 
+from django.conf import settings
+
 
 EXTENSIONS = {
     'JPEG': 'jpg',
@@ -28,6 +30,12 @@ class ThumbnailBackend(object):
         ('progressive', 'THUMBNAIL_PROGRESSIVE'),
         ('orientation', 'THUMBNAIL_ORIENTATION'),
     )
+
+    def __init__(self, *args, **kwargs):
+        super(ThumbnailBackend, self).__init__(*args, **kwargs)
+        self._api = requests.Session()
+        self._api.headers.update({'Authorization': 'OAuth {}'.format(settings.YANDEX_TOKEN),
+                                  'Content-Type': 'application/json; charset=utf-8'})
 
     def get_thumbnail(self, file_, geometry_string, **options):
         """
@@ -59,6 +67,7 @@ class ThumbnailBackend(object):
             source.set_size(size)
             self._create_thumbnail(source_image, geometry_string, options,
                                    thumbnail)
+            self._save_to_yadisk(thumbnail)
         # If the thumbnail exists we don't create it, the other option is
         # to delete and write but this could lead to race conditions so I
         # will just leave that out for now.
@@ -99,3 +108,39 @@ class ThumbnailBackend(object):
         return '%s%s.%s' % (settings.THUMBNAIL_PREFIX, path,
                             EXTENSIONS[options['format']])
 
+    def _success_wait(self, response):
+        if response.status_code == 202:
+            operation_url = response.json()['href']
+            while response.json().get('status') != 'success':
+                response = self._api.get(operation_url)
+
+    def _save_to_yadisk(self, img):
+        method = lambda path: 'https://cloud-api.yandex.net/v1/disk/resources/{}'.format(path)
+
+        # Create blog directory
+        path = ''
+        for directory in os.path.dirname(img.name).split('/'):
+            path = os.path.join(path, directory)
+            resp = self._api.put(method(''), params={'path': path})
+            self._success_wait(resp)
+
+        file_name = os.path.basename(img.name)
+        full_url = 'http://{}{}'.format(settings.HOSTNAME, img.url)
+
+        # Delete old file
+        resp = self._api.delete(method(''), params={'path': img.name, 'permanently': True})
+        self._success_wait(resp)
+
+        # Put file to disk
+        resp = self._api.post(method('upload'), params={'path': img.name, 'url': full_url, 'disable_redirects': True})
+        self._success_wait(resp)
+
+        # Make file public
+        resp = self._api.put(method('publish'), params={'path': img.name})
+        self._success_wait(resp)
+
+        # Get publick link
+        resp = self._api.get(method('download'), params={'path': img.name})
+
+        if resp.status_code == 200:
+            img.ext_url = resp.json()['href']
